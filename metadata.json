@@ -1,0 +1,7 @@
+{
+  "name": "HoloForge Studio",
+  "description": "A futuristic 3D design and paint studio featuring hand-gesture control concepts, 3D object manipulation, and image editing.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
