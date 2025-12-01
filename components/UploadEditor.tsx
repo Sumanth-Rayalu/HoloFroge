@@ -1,33 +1,94 @@
-import React, { useState, Suspense, useEffect } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Stage, Grid, Environment, useGLTF } from '@react-three/drei';
+
+import React, { useState, Suspense, useEffect, useRef } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls, Stage, Grid, Environment, useGLTF, useAnimations, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { Upload, X, Box, Settings, RotateCcw, Pause, Play, Save, Trash2, Palette, MousePointer2, Eraser, FileBox } from 'lucide-react';
-import { PaintSettings } from '../types';
+import { 
+    Upload, X, Box, Settings, RotateCcw, Pause, Play, Save, Trash2, 
+    Palette, MousePointer2, Eraser, FileBox, Bone, Layers, Lightbulb, Move,
+    RefreshCw, Scaling, Activity
+} from 'lucide-react';
+import { PaintSettings, TransformMode } from '../types';
 
 interface UploadEditorProps {
     settings: PaintSettings;
 }
 
-// Component to handle loading and material updates for the uploaded GLB
-const Model = ({ url, color, roughness, metalness, rotationSpeed }: { url: string; color: string; roughness: number; metalness: number; rotationSpeed: number }) => {
-  const { scene } = useGLTF(url);
-  const clone = React.useMemo(() => scene.clone(), [scene]);
-  const groupRef = React.useRef<THREE.Group>(null);
+// --- Rigged Model Component ---
+// Handles Animations, Skeleton Helper, and Material Updates
+const RiggedModel = ({ 
+    url, 
+    color, 
+    roughness, 
+    metalness, 
+    showSkeleton,
+    currentAnimation,
+    setAnimationsList,
+    isPlaying
+}: { 
+    url: string; 
+    color: string; 
+    roughness: number; 
+    metalness: number; 
+    showSkeleton: boolean;
+    currentAnimation: string | null;
+    setAnimationsList: (names: string[]) => void;
+    isPlaying: boolean;
+}) => {
+  const group = useRef<THREE.Group>(null);
+  const { scene, animations } = useGLTF(url);
+  const { actions, names } = useAnimations(animations, group);
+  const { scene: threeScene } = useThree();
+  const [skeletonHelper, setSkeletonHelper] = useState<THREE.SkeletonHelper | null>(null);
+
+  // Update animation list in parent
+  useEffect(() => {
+    if (names.length > 0) {
+        setAnimationsList(names);
+    }
+  }, [names, setAnimationsList]);
+
+  // Handle Animation Playback
+  useEffect(() => {
+    // Stop all first
+    Object.values(actions).forEach((action: any) => action?.fadeOut(0.5));
+    
+    if (currentAnimation && actions[currentAnimation]) {
+        const action = actions[currentAnimation];
+        if (action) {
+            action.reset().fadeIn(0.5).play();
+            action.paused = !isPlaying;
+        }
+    } else if (names.length > 0) {
+        // Default to first animation (usually Idle)
+        actions[names[0]]?.reset().fadeIn(0.5).play();
+    }
+  }, [currentAnimation, actions, names, isPlaying]);
+
+  // Handle Skeleton Visualization
+  useEffect(() => {
+    if (group.current && showSkeleton) {
+        const helper = new THREE.SkeletonHelper(group.current);
+        threeScene.add(helper);
+        setSkeletonHelper(helper);
+    } else if (skeletonHelper) {
+        threeScene.remove(skeletonHelper);
+        setSkeletonHelper(null);
+    }
+    return () => {
+        if (skeletonHelper) threeScene.remove(skeletonHelper);
+    }
+  }, [showSkeleton, threeScene]);
 
   // Apply materials
   useEffect(() => {
-    clone.traverse((child) => {
+    scene.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        // Check if material exists, otherwise create one
         if (!mesh.material) {
             mesh.material = new THREE.MeshStandardMaterial({ color: color });
         }
-        
-        // Handle array of materials or single material
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        
         materials.forEach((mat) => {
             if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshPhysicalMaterial) {
                 mat.color.set(color);
@@ -36,40 +97,39 @@ const Model = ({ url, color, roughness, metalness, rotationSpeed }: { url: strin
                 mat.needsUpdate = true;
             }
         });
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
       }
     });
-  }, [clone, color, roughness, metalness]);
+  }, [scene, color, roughness, metalness]);
 
-  // Handle rotation
-  useFrame((state, delta) => {
-    if (groupRef.current) {
-        groupRef.current.rotation.y += delta * rotationSpeed;
-    }
-  });
-
-  return (
-    <group ref={groupRef}>
-        <primitive object={clone} />
-    </group>
-  );
+  return <primitive ref={group} object={scene} />;
 };
 
 const UploadEditor: React.FC<UploadEditorProps> = ({ settings }) => {
   const [modelUrl, setModelUrl] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   
-  // Editor State
+  // Editor Tabs
+  const [activeTab, setActiveTab] = useState<'PROPERTIES' | 'ANIMATION' | 'SCENE'>('PROPERTIES');
+  
+  // Object Properties
   const [objectColor, setObjectColor] = useState('#06b6d4');
   const [roughness, setRoughness] = useState(0.4);
   const [metalness, setMetalness] = useState(0.6);
-  const [autoRotate, setAutoRotate] = useState(0.2);
-  const [currentTool, setCurrentTool] = useState<'BRUSH' | 'PICKER' | 'ERASER'>('BRUSH');
+  
+  // Scene/Transform State
+  const [transformMode, setTransformMode] = useState<TransformMode>('rotate');
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
+  
+  // Animation State
+  const [animationsList, setAnimationsList] = useState<string[]>([]);
+  const [currentAnimation, setCurrentAnimation] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(true);
 
-  // Cleanup blob url on unmount
   useEffect(() => {
-    return () => {
-        if (modelUrl) URL.revokeObjectURL(modelUrl);
-    };
+    return () => { if (modelUrl) URL.revokeObjectURL(modelUrl); };
   }, [modelUrl]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -82,16 +142,12 @@ const UploadEditor: React.FC<UploadEditorProps> = ({ settings }) => {
   const processFile = (file: File) => {
       const url = URL.createObjectURL(file);
       setModelUrl(url);
+      setAnimationsList([]); // Reset animations
   };
 
   const loadSampleModel = () => {
-    // Load a sample GLTF/GLB (Using a placeholder box for now if external URL fails, 
-    // but in a real app this would be a local asset or reliable CDN link)
-    // Here we will use a reliable public model or just simulate the load with a fallback if useGLTF handles it.
-    // For this demo, we can just use a generic 'box' placeholder if no URL is provided, 
-    // but the Model component expects a URL.
-    // Let's use a public Duck or Box model.
-    setModelUrl('https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/Duck/glTF-Binary/Duck.glb');
+    // Using a Rigged Robot model to demonstrate Skeleton + Animation features
+    setModelUrl('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/models/gltf/RobotExpressive/RobotExpressive.glb');
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -106,6 +162,7 @@ const UploadEditor: React.FC<UploadEditorProps> = ({ settings }) => {
   const handleClear = () => {
       if (modelUrl) URL.revokeObjectURL(modelUrl);
       setModelUrl(null);
+      setAnimationsList([]);
   };
 
   return (
@@ -122,7 +179,7 @@ const UploadEditor: React.FC<UploadEditorProps> = ({ settings }) => {
               <Box size={32} className="text-cyan-400" />
             </div>
             <h2 className="text-2xl font-bold text-white mb-2 holo-font">Upload 3D Object</h2>
-            <p className="text-gray-400 mb-8">Select a .glb or .gltf file to import into the HoloForge Studio.</p>
+            <p className="text-gray-400 mb-8">Select a .glb or .gltf file (Rigged models supported).</p>
             
             <div className="flex flex-col gap-4 w-full px-8">
                 <label className="w-full py-3 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded cursor-pointer transition-colors shadow-[0_0_15px_rgba(6,182,212,0.4)] flex items-center justify-center gap-2">
@@ -130,165 +187,228 @@ const UploadEditor: React.FC<UploadEditorProps> = ({ settings }) => {
                   <input type="file" accept=".glb,.gltf" className="hidden" onChange={handleFileUpload} />
                 </label>
                 
-                <div className="flex items-center gap-2 text-gray-500 text-xs">
-                    <div className="h-px bg-gray-700 flex-1"></div>
-                    <span>OR</span>
-                    <div className="h-px bg-gray-700 flex-1"></div>
-                </div>
-
                 <button 
                     onClick={loadSampleModel}
                     className="w-full py-3 bg-gray-800 hover:bg-gray-700 text-cyan-400 font-bold rounded border border-gray-700 hover:border-cyan-500/50 transition-all flex items-center justify-center gap-2"
                 >
-                   <FileBox size={18} /> Load Demo Model
+                   <FileBox size={18} /> Load Rigged Robot (Demo)
                 </button>
             </div>
-            
-            <p className="mt-6 text-xs text-gray-600 max-w-[200px]">
-                Note: File dialogs may be restricted by browser security when using hand gestures. Use "Load Demo Model" to test controls.
-            </p>
           </div>
         </div>
       ) : (
         <div className="flex flex-1 relative h-full">
-            {/* Left Toolbar - Similar to 3D Studio */}
+            {/* Left Toolbar - Transform Tools */}
             <div className="w-16 bg-black/80 border-r border-cyan-900/30 flex flex-col items-center py-6 gap-6 z-10">
                 <button
-                    onClick={() => setCurrentTool('BRUSH')}
-                    className={`p-3 rounded-lg transition-all ${currentTool === 'BRUSH' ? 'bg-cyan-600 text-white shadow-[0_0_10px_rgba(6,182,212,0.5)]' : 'text-gray-400 hover:bg-white/10'}`}
-                    title="Brush"
+                    onClick={() => setTransformMode('translate')}
+                    className={`p-3 rounded-lg transition-all ${transformMode === 'translate' ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10'}`}
+                    title="Move"
                 >
-                    <Palette size={20} />
+                    <Move size={20} />
                 </button>
                 <button
-                    onClick={() => setCurrentTool('PICKER')}
-                    className={`p-3 rounded-lg transition-all ${currentTool === 'PICKER' ? 'bg-cyan-600 text-white shadow-[0_0_10px_rgba(6,182,212,0.5)]' : 'text-gray-400 hover:bg-white/10'}`}
-                    title="Picker"
+                    onClick={() => setTransformMode('rotate')}
+                    className={`p-3 rounded-lg transition-all ${transformMode === 'rotate' ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10'}`}
+                    title="Rotate"
                 >
-                    <MousePointer2 size={20} />
+                    <RefreshCw size={20} />
                 </button>
                 <button
-                    onClick={() => setCurrentTool('ERASER')}
-                    className={`p-3 rounded-lg transition-all ${currentTool === 'ERASER' ? 'bg-cyan-600 text-white shadow-[0_0_10px_rgba(6,182,212,0.5)]' : 'text-gray-400 hover:bg-white/10'}`}
-                    title="Eraser"
+                    onClick={() => setTransformMode('scale')}
+                    className={`p-3 rounded-lg transition-all ${transformMode === 'scale' ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:bg-white/10'}`}
+                    title="Scale"
                 >
-                    <Eraser size={20} />
+                    <Scaling size={20} />
                 </button>
                 
                 <div className="w-full h-px bg-gray-800 my-2" />
                 
-                <input 
-                    type="color" 
-                    value={objectColor}
-                    onChange={(e) => setObjectColor(e.target.value)}
-                    className="w-10 h-10 rounded cursor-pointer bg-transparent border-0"
-                />
+                <button
+                    onClick={() => setShowSkeleton(!showSkeleton)}
+                    className={`p-3 rounded-lg transition-all ${showSkeleton ? 'bg-fuchsia-600 text-white' : 'text-gray-400 hover:bg-white/10'}`}
+                    title="Toggle Skeleton"
+                >
+                    <Bone size={20} />
+                </button>
             </div>
 
             {/* Main 3D Canvas */}
             <div className="flex-1 bg-gradient-to-b from-gray-900 to-black relative">
-                <Canvas shadows camera={{ position: [0, 0, 5], fov: 45 }}>
+                {/* Header Info */}
+                <div className="absolute top-0 left-0 right-0 h-10 bg-black/40 backdrop-blur border-b border-white/10 flex items-center px-4 z-10 justify-between">
+                    <span className="text-xs font-mono text-cyan-500">
+                        MODE: {transformMode.toUpperCase()} | SKELETON: {showSkeleton ? 'ON' : 'OFF'}
+                    </span>
+                    <span className="text-xs font-mono text-gray-400">
+                        ANIMATIONS DETECTED: {animationsList.length}
+                    </span>
+                </div>
+
+                <Canvas shadows camera={{ position: [0, 2, 8], fov: 50 }}>
                     <ambientLight intensity={0.5} />
                     <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} intensity={1} castShadow />
                     <Environment preset="studio" />
                     
                     <Suspense fallback={null}>
-                        <Stage intensity={0.6} environment="studio">
-                            <Model 
-                                url={modelUrl} 
-                                color={objectColor} 
-                                roughness={roughness} 
-                                metalness={metalness}
-                                rotationSpeed={autoRotate}
-                            />
-                        </Stage>
+                        <TransformControls mode={transformMode}>
+                            <group>
+                                <RiggedModel 
+                                    url={modelUrl} 
+                                    color={objectColor} 
+                                    roughness={roughness} 
+                                    metalness={metalness}
+                                    showSkeleton={showSkeleton}
+                                    currentAnimation={currentAnimation}
+                                    setAnimationsList={setAnimationsList}
+                                    isPlaying={isPlaying}
+                                />
+                            </group>
+                        </TransformControls>
                     </Suspense>
                     
-                    <Grid renderOrder={-1} position={[0, -1, 0]} infiniteGrid cellSize={0.5} sectionSize={3} fadeDistance={25} sectionColor="#06b6d4" cellColor="#1e293b" />
+                    {showGrid && <Grid renderOrder={-1} position={[0, 0, 0]} infiniteGrid cellSize={0.5} sectionSize={3} fadeDistance={25} sectionColor="#06b6d4" cellColor="#1e293b" />}
                     <OrbitControls makeDefault />
                 </Canvas>
-
-                {/* Loading / Suspense Indicator (Visual Only as Suspense fallback is null above for smooth mounting) */}
-                <div className="absolute top-4 left-4 text-xs font-mono text-cyan-600/50 pointer-events-none">
-                    RENDERING ENGINE: ONLINE
-                </div>
-
-                {/* Top Right Controls */}
-                <div className="absolute top-4 right-4 flex flex-col gap-2">
-                    <button className="bg-black/50 hover:bg-cyan-900/50 text-cyan-400 p-2 rounded border border-cyan-900/50 backdrop-blur-sm transition-colors" title="Reset View">
-                        <RotateCcw size={18} />
-                    </button>
-                    <button 
-                        className={`bg-black/50 p-2 rounded border border-cyan-900/50 backdrop-blur-sm transition-colors ${autoRotate > 0 ? 'text-cyan-400' : 'text-gray-500'}`} 
-                        onClick={() => setAutoRotate(prev => prev === 0 ? 0.2 : 0)}
-                        title={autoRotate > 0 ? "Stop Rotation" : "Start Rotation"}
-                    >
-                        {autoRotate > 0 ? <Pause size={18} /> : <Play size={18} />}
-                    </button>
-                </div>
                 
                 {/* Close Button */}
                 <button 
                     onClick={handleClear}
-                    className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-900/20 hover:bg-red-900/40 text-red-400 px-4 py-2 rounded-full border border-red-900/50 backdrop-blur-sm transition-all text-xs font-bold uppercase tracking-wider flex items-center gap-2"
+                    className="absolute top-14 left-4 bg-red-900/20 hover:bg-red-900/40 text-red-400 px-3 py-1.5 rounded-full border border-red-900/50 backdrop-blur-sm transition-all text-xs font-bold uppercase tracking-wider flex items-center gap-2"
                 >
-                    <X size={14} /> Close Model
+                    <X size={14} /> Close Project
                 </button>
             </div>
 
-            {/* Right Sidebar - Properties */}
-            <div className="w-64 bg-black/80 border-l border-cyan-900/30 p-4 flex flex-col gap-6 z-10">
-                <div>
-                    <div className="flex items-center gap-2 text-cyan-400 mb-4 font-bold uppercase text-xs tracking-wider">
-                        <Settings size={14} /> Material Config
-                    </div>
-                    <div className="space-y-6">
-                        <div>
-                            <div className="flex justify-between text-xs text-gray-400 mb-1">
-                                <span>Roughness</span>
-                                <span>{Math.round(roughness * 100)}%</span>
-                            </div>
-                            <input 
-                                type="range" 
-                                min="0" 
-                                max="1" 
-                                step="0.01" 
-                                value={roughness}
-                                onChange={(e) => setRoughness(parseFloat(e.target.value))}
-                                className="w-full accent-cyan-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer" 
-                            />
-                        </div>
-                        <div>
-                            <div className="flex justify-between text-xs text-gray-400 mb-1">
-                                <span>Metalness</span>
-                                <span>{Math.round(metalness * 100)}%</span>
-                            </div>
-                            <input 
-                                type="range" 
-                                min="0" 
-                                max="1" 
-                                step="0.01" 
-                                value={metalness}
-                                onChange={(e) => setMetalness(parseFloat(e.target.value))}
-                                className="w-full accent-cyan-500 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer" 
-                            />
-                        </div>
-                    </div>
-                </div>
-
-                <div className="mt-auto space-y-3">
-                    <button className="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded flex items-center justify-center gap-2 transition-all">
-                        <Save size={16} /> Export GLB
+            {/* Right Sidebar - Complex Blender-like Tabs */}
+            <div className="w-80 bg-black/90 border-l border-cyan-900/30 flex flex-col z-10">
+                {/* Tab Headers */}
+                <div className="flex border-b border-gray-800">
+                    <button 
+                        onClick={() => setActiveTab('PROPERTIES')}
+                        className={`flex-1 py-3 text-xs font-bold uppercase ${activeTab === 'PROPERTIES' ? 'text-cyan-400 border-b-2 border-cyan-400 bg-gray-900' : 'text-gray-500 hover:text-gray-300'}`}
+                    >
+                        Properties
                     </button>
                     <button 
-                        onClick={() => {
-                            setObjectColor('#ffffff');
-                            setRoughness(0.5);
-                            setMetalness(0.5);
-                        }}
-                        className="w-full py-2 bg-transparent border border-red-900/50 hover:bg-red-900/20 text-red-400 font-bold rounded flex items-center justify-center gap-2 transition-all"
+                        onClick={() => setActiveTab('ANIMATION')}
+                        className={`flex-1 py-3 text-xs font-bold uppercase ${activeTab === 'ANIMATION' ? 'text-fuchsia-400 border-b-2 border-fuchsia-400 bg-gray-900' : 'text-gray-500 hover:text-gray-300'}`}
                     >
-                        <Trash2 size={16} /> Reset Material
+                        Animation
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab('SCENE')}
+                        className={`flex-1 py-3 text-xs font-bold uppercase ${activeTab === 'SCENE' ? 'text-green-400 border-b-2 border-green-400 bg-gray-900' : 'text-gray-500 hover:text-gray-300'}`}
+                    >
+                        Scene
+                    </button>
+                </div>
+
+                {/* Tab Content */}
+                <div className="p-4 flex flex-col gap-6 overflow-y-auto flex-1">
+                    
+                    {/* PROPERTIES TAB */}
+                    {activeTab === 'PROPERTIES' && (
+                        <div className="space-y-6">
+                            <div className="flex items-center gap-2 text-cyan-400 mb-2 font-bold uppercase text-xs tracking-wider">
+                                <Settings size={14} /> Material Config
+                            </div>
+                            
+                            <div>
+                                <label className="text-xs text-gray-400 mb-1 block">Base Color</label>
+                                <input 
+                                    type="color" 
+                                    value={objectColor}
+                                    onChange={(e) => setObjectColor(e.target.value)}
+                                    className="w-full h-8 rounded cursor-pointer bg-transparent border border-gray-700"
+                                />
+                            </div>
+
+                            <div>
+                                <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                    <span>Roughness</span>
+                                    <span>{Math.round(roughness * 100)}%</span>
+                                </div>
+                                <input type="range" min="0" max="1" step="0.01" value={roughness} onChange={(e) => setRoughness(parseFloat(e.target.value))} className="w-full accent-cyan-500 h-1 bg-gray-700 rounded-lg appearance-none" />
+                            </div>
+                            
+                            <div>
+                                <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                    <span>Metalness</span>
+                                    <span>{Math.round(metalness * 100)}%</span>
+                                </div>
+                                <input type="range" min="0" max="1" step="0.01" value={metalness} onChange={(e) => setMetalness(parseFloat(e.target.value))} className="w-full accent-cyan-500 h-1 bg-gray-700 rounded-lg appearance-none" />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ANIMATION TAB */}
+                    {activeTab === 'ANIMATION' && (
+                        <div className="space-y-6">
+                            <div className="flex items-center gap-2 text-fuchsia-400 mb-2 font-bold uppercase text-xs tracking-wider">
+                                <Activity size={14} /> Rig Actions
+                            </div>
+
+                            {animationsList.length === 0 ? (
+                                <div className="text-center p-6 border border-dashed border-gray-700 rounded-lg">
+                                    <p className="text-gray-500 text-xs">No animations found in model.</p>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {animationsList.map((animName) => (
+                                            <button
+                                                key={animName}
+                                                onClick={() => {
+                                                    setCurrentAnimation(animName);
+                                                    setIsPlaying(true);
+                                                }}
+                                                className={`p-2 text-xs rounded border text-left truncate transition-all ${currentAnimation === animName ? 'bg-fuchsia-900/40 border-fuchsia-500 text-white' : 'border-gray-700 text-gray-400 hover:bg-gray-800'}`}
+                                            >
+                                                {animName}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    
+                                    <div className="flex items-center justify-between bg-gray-800 p-2 rounded">
+                                        <span className="text-xs text-gray-400 font-mono">
+                                            {currentAnimation || "Idle"}
+                                        </span>
+                                        <button 
+                                            onClick={() => setIsPlaying(!isPlaying)}
+                                            className="p-1 text-white hover:text-fuchsia-400"
+                                        >
+                                            {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    )}
+
+                    {/* SCENE TAB */}
+                    {activeTab === 'SCENE' && (
+                        <div className="space-y-6">
+                            <div className="flex items-center gap-2 text-green-400 mb-2 font-bold uppercase text-xs tracking-wider">
+                                <Layers size={14} /> Environment
+                            </div>
+                            
+                            <div className="flex items-center justify-between">
+                                <label className="text-xs text-gray-400">Show Grid</label>
+                                <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} className="accent-green-500" />
+                            </div>
+
+                            <div className="flex items-center justify-between">
+                                <label className="text-xs text-gray-400">Show Skeleton</label>
+                                <input type="checkbox" checked={showSkeleton} onChange={(e) => setShowSkeleton(e.target.checked)} className="accent-green-500" />
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div className="p-4 border-t border-gray-800 space-y-3">
+                    <button className="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded flex items-center justify-center gap-2 transition-all text-sm">
+                        <Save size={14} /> Export GLB
                     </button>
                 </div>
             </div>

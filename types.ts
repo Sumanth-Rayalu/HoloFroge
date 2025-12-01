@@ -1,6 +1,11 @@
+
 export type AppMode = 'LANDING' | 'THREE_D' | 'UPLOAD' | 'PAINT';
 
 export type ToolType = 'BRUSH' | 'ERASER' | 'FILL' | 'PICKER' | 'STICKER';
+
+export type TransformMode = 'translate' | 'rotate' | 'scale';
+
+export type ViewMode = 'SOLID' | 'WIREFRAME';
 
 export interface CursorState {
   x: number;
@@ -12,7 +17,7 @@ export interface CursorState {
 export interface Template3D {
   id: string;
   name: string;
-  type: 'cube' | 'sphere' | 'cylinder' | 'torus';
+  type: 'cube' | 'sphere' | 'cylinder' | 'torus' | 'cone' | 'icosahedron';
   thumbnail: string;
 }
 
@@ -23,8 +28,10 @@ export interface PaintSettings {
 }
 
 export const MOCK_TEMPLATES: Template3D[] = [
-  { id: '1', name: 'Cyber Box', type: 'cube', thumbnail: 'https://picsum.photos/id/1/100/100' },
+  { id: '1', name: 'Cyber Cube', type: 'cube', thumbnail: 'https://picsum.photos/id/1/100/100' },
   { id: '2', name: 'Sphere Core', type: 'sphere', thumbnail: 'https://picsum.photos/id/2/100/100' },
   { id: '3', name: 'Flask v2', type: 'cylinder', thumbnail: 'https://picsum.photos/id/3/100/100' },
   { id: '4', name: 'Torus Ring', type: 'torus', thumbnail: 'https://picsum.photos/id/4/100/100' },
+  { id: '5', name: 'Pyramid', type: 'cone', thumbnail: 'https://picsum.photos/id/5/100/100' },
+  { id: '6', name: 'Geo Prism', type: 'icosahedron', thumbnail: 'https://picsum.photos/id/6/100/100' },
 ];
